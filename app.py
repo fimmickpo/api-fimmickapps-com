@@ -3,12 +3,13 @@ import time
 import asyncio
 import uvicorn
 from typing import List, Optional
-from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi import FastAPI, UploadFile, File, HTTPException, Query
 from fastapi.responses import Response
 from pydantic import BaseModel
 from PIL import Image
 
 import ricacorp_scraper
+import ricacorp_search
 
 try:
     from rembg import remove, new_session
@@ -78,6 +79,13 @@ async def root():
   <div class="desc">批量爬取多個 Ricacorp 樓盤詳情頁</div>
   <div class="io"><strong>輸入：</strong><code>application/json</code> · <code>{"urls": [...], "delay": 1.0}</code></div>
   <div class="io"><strong>輸出：</strong><code>application/json</code> · <code>{"results": [...]}</code></div>
+</div>
+
+<div class="endpoint">
+  <span class="method GET">GET</span><span class="path">/ricacorp_search</span>
+  <div class="desc">以自然語言搜尋 Ricacorp 買盤／租盤，例如 <code>港島區 400ft 1000m以下</code>、<code>想租 太古城 有匙 兩房 20k以下</code></div>
+  <div class="io"><strong>輸入：</strong>Query string <code>q</code>、<code>limit</code>（1–50，預設 5）、<code>details</code>（預設 true，逐個爬詳情頁）</div>
+  <div class="io"><strong>輸出：</strong><code>application/json</code> · <code>{"query", "params", "total", "results": [...]}</code></div>
 </div>
 
 <hr>
@@ -200,6 +208,15 @@ async def ricacorp_scrape_post(req: ScrapeRequest):
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))
     return {"results": records}
+
+@app.get("/ricacorp_search")
+async def ricacorp_search_get(q: str, limit: int = Query(5, ge=1, le=50), details: bool = True):
+    if not q.strip():
+        raise HTTPException(status_code=400, detail="請提供搜尋字串 q")
+    try:
+        return await asyncio.to_thread(ricacorp_search.search, q, limit, details)
+    except Exception as e:
+        raise HTTPException(status_code=502, detail=str(e))
 
 if __name__ == "__main__":
     uvicorn.run(app, host="0.0.0.0", port=8001)
