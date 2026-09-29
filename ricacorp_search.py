@@ -94,16 +94,17 @@ def parse_query(query, limit=5, tags=None, suggest=None):
         params["priceFrom" if price.group(3) in ("以上", "起") else "priceTo"] = str(hkd)
         rest = rest[:price.start()] + " " + rest[price.end():]
 
+    # Regions first, so 新界東 is not split by the location scan; 九龍塘/西九龍 are districts, not the region.
+    for name, aliases in (("港島", r"港島區?|香港島|hong\s*kong\s*island"), ("九龍", r"(?<!西)九龍(?![塘站灣城])區?"), ("新界東", r"新界東"), ("新界西", r"新界西")):
+        if re.search(aliases, rest, re.I):
+            params["locationId"] = REGIONS[name]  # a later estate/district match is more specific and overrides it
+            rest = re.sub(aliases, " ", rest, flags=re.I)
+            break
     matched_tags = []
     rest = match_tags(rest, tags, matched_tags)
     if suggest:
         rest = match_locations(rest, suggest, tags, params)
         rest = match_tags(rest, tags, matched_tags)
-    for name, aliases in (("港島", r"港島區?|香港島|hong\s*kong\s*island"), ("九龍", r"九龍區?"), ("新界東", r"新界東"), ("新界西", r"新界西")):
-        if re.search(aliases, rest, re.I):
-            params.setdefault("locationId", REGIONS[name])  # a matched estate/district is more specific
-            rest = re.sub(aliases, " ", rest, flags=re.I)
-            break
     if matched_tags:
         params["postTags"] = ",".join(dict.fromkeys(matched_tags))
 
@@ -125,21 +126,36 @@ def match_tags(rest, tags, matched):
 def match_locations(rest, suggest, tags, params):
     """Split unspaced text into estate/district names and tag labels, longest match first."""
     out, best_depth = [], -1
+
+    def use(loc):
+        nonlocal best_depth
+        if len(loc["pathNames"]) > best_depth:  # ponytail: one locationId; keep the most specific match
+            params["locationId"], best_depth = loc["locationId"], len(loc["pathNames"])
+
+    is_word = lambda text: bool(re.fullmatch(r"[\u4e00-\u9fff]{2,}", text))
     for chunk in rest.split():
-        i, free = 0, ""
+        whole = suggest(chunk) if is_word(chunk) and chunk not in tags else []
+        exact = [loc for loc in whole if chunk in {loc["displayText"], *loc["displayText"].split("/")}]
+        if exact:  # e.g. 康怡花園, before its 花園 can be read as a tag
+            use(max(exact, key=lambda loc: len(loc["pathNames"])))
+            continue
+        i, free, pieces = 0, "", []
         while i < len(chunk):
             found = [(label, None) for label in tags if chunk.startswith(label, i)]
-            if chunk not in tags and re.match(r"[\u4e00-\u9fff]{2}", chunk[i:i + 2]):
+            if chunk not in tags and is_word(chunk[i:i + 2]):
                 found += [(part, r) for r in suggest(chunk[i:i + 2]) for part in {r["displayText"], *r["displayText"].split("/")} if chunk.startswith(part, i)]
             if not found:
                 free, i = free + chunk[i], i + 1
                 continue
             name, loc = max(found, key=lambda n: (len(n[0]), len(n[1]["pathNames"]) if n[1] else 0))
-            if loc and len(loc["pathNames"]) > best_depth:  # ponytail: one locationId; keep the most specific match
-                params["locationId"], best_depth = loc["locationId"], len(loc["pathNames"])
-            out += [free, name if not loc else ""]
+            if loc:
+                use(loc)
+            pieces += [free, name if not loc else ""]
             free, i = "", i + len(name)
-        out.append(free)
+        if not pieces and whole and len(whole[0]["pathNames"]) == 4:
+            use(whole[0])  # Ricacorp alias, e.g. 深水埗 -> 西九龍, 上環 -> 中上環/西區
+            continue
+        out += pieces + [free]
     return " ".join(out)
 
 
